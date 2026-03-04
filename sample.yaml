@@ -1,0 +1,292 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CodeBuild Project for Finance Infrastructure (CDK Deployment)'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: build-finance-infra
+    Description: CodeBuild project name
+
+  GitHubOwner:
+    Type: String
+    Default: h-akira
+    Description: GitHub repository owner
+
+  GitHubRepo:
+    Type: String
+    Default: FinanceProject_Infra
+    Description: GitHub repository name
+
+  GitHubBranch:
+    Type: String
+    Default: main
+    Description: GitHub branch to build
+
+  CodeStarConnectionArn:
+    Type: String
+    Description: CodeStar Connection ARN for GitHub
+    # Example: arn:aws:codeconnections:ap-northeast-1:XXXXXXXXXXXX:connection/xxx
+
+Resources:
+  # CodeConnections Managed Policy
+  CodeConnectionsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub 'CodeBuildCodeConnectionsPolicy-${ProjectName}'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - codestar-connections:GetConnectionToken
+              - codestar-connections:GetConnection
+              - codeconnections:GetConnectionToken
+              - codeconnections:GetConnection
+              - codeconnections:UseConnection
+            Resource: !Ref CodeStarConnectionArn
+
+  # IAM Role for CodeBuild
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'codebuild-${ProjectName}-service-role'
+      Path: /service-role/
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref CodeConnectionsPolicy
+
+  # CloudWatch Logs Policy
+  CloudWatchLogsPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: CloudWatchLogsPolicy
+      Roles:
+        - !Ref CodeBuildServiceRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: CloudWatchLogsBasic
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${ProjectName}'
+              - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${ProjectName}:*'
+          - Sid: CloudWatchLogsCDK
+            Effect: Allow
+            Action:
+              - logs:DescribeLogGroups
+              - logs:CreateLogGroup
+              - logs:DeleteLogGroup
+              - logs:PutRetentionPolicy
+              - logs:DeleteRetentionPolicy
+              - logs:TagLogGroup
+              - logs:UntagLogGroup
+              - logs:DescribeResourcePolicies
+              - logs:DescribeIndexPolicies
+              - logs:ListTagsForResource
+              - logs:AssociateKmsKey
+              - logs:DisassociateKmsKey
+            Resource: '*'
+
+  # CodeBuild Reports Policy
+  CodeBuildReportsPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: CodeBuildReportsPolicy
+      Roles:
+        - !Ref CodeBuildServiceRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - codebuild:CreateReportGroup
+              - codebuild:CreateReport
+              - codebuild:UpdateReport
+              - codebuild:BatchPutTestCases
+              - codebuild:BatchPutCodeCoverages
+            Resource:
+              - !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:report-group/${ProjectName}-*'
+
+  # CDK Deployment Policy
+  CDKDeploymentPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: CDKDeploymentPolicy
+      Roles:
+        - !Ref CodeBuildServiceRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # STS - Assume CDK bootstrap roles
+          - Sid: STSAssumeRole
+            Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Resource:
+              - !Sub 'arn:aws:iam::${AWS::AccountId}:role/cdk-*'
+          # CloudFormation - Stack management
+          - Sid: CloudFormationStack
+            Effect: Allow
+            Action:
+              - cloudformation:CreateChangeSet
+              - cloudformation:CreateStack
+              - cloudformation:DeleteStack
+              - cloudformation:DescribeChangeSet
+              - cloudformation:DescribeStackEvents
+              - cloudformation:DescribeStackResources
+              - cloudformation:DescribeStacks
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:GetTemplate
+              - cloudformation:GetTemplateSummary
+              - cloudformation:ListStackResources
+              - cloudformation:UpdateStack
+              - cloudformation:UpdateTerminationProtection
+              - cloudformation:DeleteChangeSet
+              - cloudformation:ListChangeSets
+            Resource:
+              - !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/*'
+          # S3 - CDK asset bucket operations
+          - Sid: S3CDKAssets
+            Effect: Allow
+            Action:
+              - s3:CreateBucket
+              - s3:GetObject
+              - s3:PutObject
+              - s3:ListBucket
+              - s3:DeleteObject
+              - s3:GetBucketLocation
+              - s3:GetBucketPolicy
+              - s3:PutBucketPolicy
+              - s3:DeleteBucketPolicy
+              - s3:PutBucketVersioning
+              - s3:GetBucketVersioning
+              - s3:PutBucketPublicAccessBlock
+              - s3:GetBucketPublicAccessBlock
+              - s3:PutBucketTagging
+              - s3:GetBucketTagging
+              - s3:PutEncryptionConfiguration
+              - s3:GetEncryptionConfiguration
+              - s3:PutLifecycleConfiguration
+              - s3:GetLifecycleConfiguration
+            Resource:
+              - !Sub 'arn:aws:s3:::cdk-*'
+              - !Sub 'arn:aws:s3:::cdk-*/*'
+          # IAM - CDK bootstrap role management
+          - Sid: IAMBootstrapRoles
+            Effect: Allow
+            Action:
+              - iam:CreateRole
+              - iam:AttachRolePolicy
+              - iam:DeleteRole
+              - iam:DetachRolePolicy
+              - iam:GetRole
+              - iam:TagRole
+              - iam:UntagRole
+              - iam:DeleteRolePolicy
+              - iam:PutRolePolicy
+              - iam:GetRolePolicy
+              - iam:ListAttachedRolePolicies
+              - iam:ListRolePolicies
+              - iam:UpdateAssumeRolePolicy
+            Resource:
+              - !Sub 'arn:aws:iam::${AWS::AccountId}:role/cdk-*'
+          - Sid: IAMPassRole
+            Effect: Allow
+            Action:
+              - iam:PassRole
+            Resource:
+              - !Sub 'arn:aws:iam::${AWS::AccountId}:role/cdk-*'
+          # SSM - Parameter Store read access
+          - Sid: SSMParameterStore
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+              - ssm:GetParameters
+              - ssm:GetParametersByPath
+            Resource:
+              - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/*'
+          # SSM - CDK bootstrap parameter
+          - Sid: SSMCDKBootstrap
+            Effect: Allow
+            Action:
+              - ssm:PutParameter
+              - ssm:DeleteParameter
+            Resource:
+              - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cdk-bootstrap/*'
+          # ECR - CDK bootstrap repository
+          - Sid: ECRBootstrap
+            Effect: Allow
+            Action:
+              - ecr:CreateRepository
+              - ecr:DeleteRepository
+              - ecr:DescribeRepositories
+              - ecr:PutLifecyclePolicy
+              - ecr:SetRepositoryPolicy
+              - ecr:GetRepositoryPolicy
+              - ecr:DeleteRepositoryPolicy
+              - ecr:TagResource
+              - ecr:UntagResource
+              - ecr:ListTagsForResource
+            Resource:
+              - !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/cdk-*'
+
+  # CodeBuild Project
+  InfraProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Ref ProjectName
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:7.0
+      Source:
+        Type: GITHUB
+        Location: !Sub 'https://github.com/${GitHubOwner}/${GitHubRepo}.git'
+        BuildSpec: buildspec.yml
+      SourceVersion: !Sub 'refs/heads/${GitHubBranch}'
+      Triggers:
+        Webhook: true
+        FilterGroups:
+          - - Type: EVENT
+              Pattern: PUSH
+            - Type: HEAD_REF
+              Pattern: !Sub '^refs/heads/${GitHubBranch}$'
+      Tags:
+        - Key: Name
+          Value: codebuild-infra
+        - Key: Environment
+          Value: production
+        - Key: Created
+          Value: '20251109'
+
+Outputs:
+  ProjectName:
+    Description: CodeBuild Project Name
+    Value: !Ref InfraProject
+    Export:
+      Name: !Sub '${AWS::StackName}-ProjectName'
+
+  ProjectArn:
+    Description: CodeBuild Project ARN
+    Value: !GetAtt InfraProject.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ProjectArn'
+
+  ServiceRoleArn:
+    Description: CodeBuild Service Role ARN
+    Value: !GetAtt CodeBuildServiceRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ServiceRoleArn'

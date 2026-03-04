@@ -1,0 +1,191 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CodeBuild project for Frontend (shogi-board build + shogi-main build & deploy)
+
+Parameters:
+  GitHubOwner:
+    Type: String
+    Default: h-akira
+    Description: GitHub repository owner
+  GitHubRepo:
+    Type: String
+    Default: ShogiProject2_Frontend
+    Description: GitHub repository name
+  GitHubBranch:
+    Type: String
+    Default: main
+    Description: GitHub branch to build
+  CodeStarConnectionArn:
+    Type: String
+    Description: "CodeStar Connection ARN for GitHub (e.g. arn:aws:codeconnections:ap-northeast-1:XXXXXXXXXXXX:connection/xxx)"
+  Env:
+    Type: String
+    Description: Environment identifier (dev, pro)
+    Default: dev
+
+Resources:
+  CodeConnectionsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "policy-sgp-${Env}-cicd-connections-frontend"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - codestar-connections:GetConnectionToken
+              - codestar-connections:GetConnection
+              - codeconnections:GetConnectionToken
+              - codeconnections:GetConnection
+              - codeconnections:UseConnection
+            Resource: !Ref CodeStarConnectionArn
+
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "role-sgp-${Env}-cicd-codebuild-frontend"
+      Path: /service-role/
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref CodeConnectionsPolicy
+
+  CloudWatchLogsPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "policy-sgp-${Env}-cicd-logs-frontend"
+      Roles:
+        - !Ref CodeBuildRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: CloudWatchLogsBasic
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/codebuild-sgp-${Env}-frontend"
+              - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/codebuild-sgp-${Env}-frontend:*"
+          - Sid: CloudWatchLogsManage
+            Effect: Allow
+            Action:
+              - logs:DescribeLogGroups
+              - logs:CreateLogGroup
+              - logs:DeleteLogGroup
+              - logs:PutRetentionPolicy
+              - logs:DeleteRetentionPolicy
+              - logs:TagLogGroup
+              - logs:UntagLogGroup
+              - logs:DescribeResourcePolicies
+              - logs:ListTagsForResource
+            Resource: "*"
+
+  CodeBuildReportsPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "policy-sgp-${Env}-cicd-reports-frontend"
+      Roles:
+        - !Ref CodeBuildRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - codebuild:CreateReportGroup
+              - codebuild:CreateReport
+              - codebuild:UpdateReport
+              - codebuild:BatchPutTestCases
+              - codebuild:BatchPutCodeCoverages
+            Resource: !Sub "arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:report-group/codebuild-sgp-${Env}-frontend-*"
+
+  FrontendDeployPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "policy-sgp-${Env}-cicd-deploy-frontend"
+      Roles:
+        - !Ref CodeBuildRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # units_contracts.md: インフラ → CI/CD エクスポート5件を buildspec で取得
+          # sgp-${Env}-infra-S3BucketName, CloudFrontDistributionId, CloudFrontDomainName,
+          # CognitoClientId, CognitoDomain
+          # + sgp-${Env}-infra-CognitoUserPoolId (VITE_COGNITO_AUTHORITY 生成に使用)
+          - Sid: CloudFormationExports
+            Effect: Allow
+            Action:
+              - cloudformation:ListExports
+            Resource: "*"
+          # S3: s3-sgp-${Env}-infra-frontend バケットへ sync (put/get/delete/list)
+          - Sid: S3Deploy
+            Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+              - s3:DeleteObject
+              - s3:ListBucket
+            Resource:
+              - !Sub "arn:aws:s3:::s3-sgp-${Env}-infra-frontend"
+              - !Sub "arn:aws:s3:::s3-sgp-${Env}-infra-frontend/*"
+          # CloudFront: デプロイ後のキャッシュ無効化
+          - Sid: CloudFrontInvalidation
+            Effect: Allow
+            Action:
+              - cloudfront:CreateInvalidation
+            Resource: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/*"
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "codebuild-sgp-${Env}-frontend"
+      Description: Build and deploy Frontend (shogi-board + shogi-main)
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        EnvironmentVariables:
+          - Name: ENV
+            Value: !Ref Env
+          - Name: PROJECT
+            Value: sgp
+      Source:
+        Type: GITHUB
+        Location: !Sub "https://github.com/${GitHubOwner}/${GitHubRepo}.git"
+        BuildSpec: buildspec.yml
+      SourceVersion: !Sub "refs/heads/${GitHubBranch}"
+      Triggers:
+        Webhook: true
+        FilterGroups:
+          - - Type: EVENT
+              Pattern: PUSH
+            - Type: HEAD_REF
+              Pattern: !Sub "^refs/heads/${GitHubBranch}$"
+      Tags:
+        - Key: Project
+          Value: ShogiProject
+        - Key: Env
+          Value: !Ref Env
+      TimeoutInMinutes: 15
+
+Outputs:
+  CodeBuildProjectName:
+    Value: !Ref CodeBuildProject
+    Export:
+      Name: !Sub "${AWS::StackName}-ProjectName"
+  CodeBuildProjectArn:
+    Value: !GetAtt CodeBuildProject.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-ProjectArn"
+  ServiceRoleArn:
+    Value: !GetAtt CodeBuildRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-ServiceRoleArn"

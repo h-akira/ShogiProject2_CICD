@@ -1,0 +1,241 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CodeBuild project for Backend Main API (SAM build & deploy)
+
+Parameters:
+  GitHubOwner:
+    Type: String
+    Default: h-akira
+    Description: GitHub repository owner
+  GitHubRepo:
+    Type: String
+    Default: ShogiProject2_Backend_main
+    Description: GitHub repository name
+  GitHubBranch:
+    Type: String
+    Default: main
+    Description: GitHub branch to build
+  CodeStarConnectionArn:
+    Type: String
+    Description: "CodeStar Connection ARN for GitHub (e.g. arn:aws:codeconnections:ap-northeast-1:XXXXXXXXXXXX:connection/xxx)"
+  Env:
+    Type: String
+    Description: Environment identifier (dev, pro)
+    Default: dev
+
+Resources:
+  CodeConnectionsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "policy-sgp-${Env}-cicd-connections-backend-main"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - codestar-connections:GetConnectionToken
+              - codestar-connections:GetConnection
+              - codeconnections:GetConnectionToken
+              - codeconnections:GetConnection
+              - codeconnections:UseConnection
+            Resource: !Ref CodeStarConnectionArn
+
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "role-sgp-${Env}-cicd-codebuild-backend-main"
+      Path: /service-role/
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref CodeConnectionsPolicy
+
+  CloudWatchLogsPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "policy-sgp-${Env}-cicd-logs-backend-main"
+      Roles:
+        - !Ref CodeBuildRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: CloudWatchLogsBasic
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/codebuild-sgp-${Env}-backend-main"
+              - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/codebuild-sgp-${Env}-backend-main:*"
+          - Sid: CloudWatchLogsManage
+            Effect: Allow
+            Action:
+              - logs:DescribeLogGroups
+              - logs:CreateLogGroup
+              - logs:DeleteLogGroup
+              - logs:PutRetentionPolicy
+              - logs:DeleteRetentionPolicy
+              - logs:TagLogGroup
+              - logs:UntagLogGroup
+              - logs:DescribeResourcePolicies
+              - logs:ListTagsForResource
+            Resource: "*"
+
+  CodeBuildReportsPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "policy-sgp-${Env}-cicd-reports-backend-main"
+      Roles:
+        - !Ref CodeBuildRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - codebuild:CreateReportGroup
+              - codebuild:CreateReport
+              - codebuild:UpdateReport
+              - codebuild:BatchPutTestCases
+              - codebuild:BatchPutCodeCoverages
+            Resource: !Sub "arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:report-group/codebuild-sgp-${Env}-backend-main-*"
+
+  SAMDeployPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "policy-sgp-${Env}-cicd-sam-backend-main"
+      Roles:
+        - !Ref CodeBuildRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # SAM --resolve-s3: 自動管理バケットへのアーティファクトアップロード
+          - Sid: SAMResolveS3
+            Effect: Allow
+            Action:
+              - s3:CreateBucket
+              - s3:PutObject
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:GetBucketLocation
+            Resource:
+              - !Sub "arn:aws:s3:::aws-sam-cli-managed-*"
+              - !Sub "arn:aws:s3:::aws-sam-cli-managed-*/*"
+          # CloudFormation スタック操作
+          # ListExports は !ImportValue (sgp-${Env}-infra-Cognito*) の解決に必要
+          - Sid: CloudFormationDeploy
+            Effect: Allow
+            Action:
+              - cloudformation:CreateStack
+              - cloudformation:UpdateStack
+              - cloudformation:DescribeStacks
+              - cloudformation:DescribeStackEvents
+              - cloudformation:GetTemplateSummary
+              - cloudformation:CreateChangeSet
+              - cloudformation:DescribeChangeSet
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:DeleteChangeSet
+              - cloudformation:ListStackResources
+              - cloudformation:ListExports
+            Resource: "*"
+          # Lambda 関数: lambda-sgp-${Env}-backend-main (Lambdalith 1関数)
+          - Sid: LambdaDeploy
+            Effect: Allow
+            Action:
+              - lambda:CreateFunction
+              - lambda:UpdateFunctionCode
+              - lambda:UpdateFunctionConfiguration
+              - lambda:GetFunction
+              - lambda:DeleteFunction
+              - lambda:AddPermission
+              - lambda:RemovePermission
+              - lambda:TagResource
+              - lambda:ListTags
+            Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:lambda-sgp-${Env}-backend-main"
+          # API Gateway: SAM が REST API を作成・更新
+          - Sid: APIGatewayDeploy
+            Effect: Allow
+            Action:
+              - apigateway:GET
+              - apigateway:POST
+              - apigateway:PUT
+              - apigateway:DELETE
+              - apigateway:PATCH
+            Resource: !Sub "arn:aws:apigateway:${AWS::Region}::/*"
+          # IAM: SAM が Lambda 実行ロールを作成
+          # Lambda ポリシー (dsql:DbConnectAdmin, cognito-idp:*) は SAM が PutRolePolicy で付与
+          - Sid: IAMDeploy
+            Effect: Allow
+            Action:
+              - iam:CreateRole
+              - iam:DeleteRole
+              - iam:AttachRolePolicy
+              - iam:DetachRolePolicy
+              - iam:PutRolePolicy
+              - iam:DeleteRolePolicy
+              - iam:GetRole
+              - iam:PassRole
+              - iam:TagRole
+            Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/*"
+          # Aurora DSQL クラスター (template.yaml: DsqlCluster リソース)
+          - Sid: DSQLDeploy
+            Effect: Allow
+            Action:
+              - dsql:CreateCluster
+              - dsql:UpdateCluster
+              - dsql:GetCluster
+              - dsql:DeleteCluster
+              - dsql:TagResource
+            Resource: !Sub "arn:aws:dsql:${AWS::Region}:${AWS::AccountId}:cluster/*"
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "codebuild-sgp-${Env}-backend-main"
+      Description: Build and deploy Backend Main API (SAM)
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        EnvironmentVariables:
+          - Name: ENV
+            Value: !Ref Env
+      Source:
+        Type: GITHUB
+        Location: !Sub "https://github.com/${GitHubOwner}/${GitHubRepo}.git"
+        BuildSpec: buildspec.yml
+      SourceVersion: !Sub "refs/heads/${GitHubBranch}"
+      Triggers:
+        Webhook: true
+        FilterGroups:
+          - - Type: EVENT
+              Pattern: PUSH
+            - Type: HEAD_REF
+              Pattern: !Sub "^refs/heads/${GitHubBranch}$"
+      Tags:
+        - Key: Project
+          Value: ShogiProject
+        - Key: Env
+          Value: !Ref Env
+      TimeoutInMinutes: 15
+
+Outputs:
+  CodeBuildProjectName:
+    Value: !Ref CodeBuildProject
+    Export:
+      Name: !Sub "${AWS::StackName}-ProjectName"
+  CodeBuildProjectArn:
+    Value: !GetAtt CodeBuildProject.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-ProjectArn"
+  ServiceRoleArn:
+    Value: !GetAtt CodeBuildRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-ServiceRoleArn"

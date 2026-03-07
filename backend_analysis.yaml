@@ -144,6 +144,9 @@ Resources:
               - ecr:BatchGetImage
               - ecr:GetDownloadUrlForLayer
               - ecr:TagResource
+              - ecr:SetRepositoryPolicy
+              - ecr:GetRepositoryPolicy
+              - ecr:DeleteRepository
             Resource: !Sub "arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/*"
           # CloudFormation スタック操作
           # ListExports は !ImportValue (sgp-${Env}-infra-Cognito*) の解決に必要
@@ -232,6 +235,8 @@ Resources:
               - dynamodb:DescribeTable
               - dynamodb:DeleteTable
               - dynamodb:TagResource
+              - dynamodb:UpdateTimeToLive
+              - dynamodb:DescribeTimeToLive
             Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/dynamodb-sgp-${Env}-backend-analysis"
           # SSM: DockerHub 認証情報 (buildspec.yml の env.parameter-store で参照)
           - Sid: SSMDockerHub
@@ -254,7 +259,7 @@ Resources:
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_LARGE
-        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        Image: aws/codebuild/amazonlinux-x86_64-standard:5.0
         PrivilegedMode: true
         EnvironmentVariables:
           - Name: ENV
@@ -263,6 +268,9 @@ Resources:
         Type: GITHUB
         Location: !Sub "https://github.com/${GitHubOwner}/${GitHubRepo}.git"
         BuildSpec: buildspec.yml
+        GitCloneDepth: 1
+        GitSubmodulesConfig:
+          FetchSubmodules: true
       SourceVersion: !Sub "refs/heads/${GitHubBranch}"
       Triggers:
         Webhook: true

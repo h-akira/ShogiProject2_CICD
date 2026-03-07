@@ -1,0 +1,2 @@
+deploy_*.sh
+!deploy_sample.sh

@@ -23,16 +23,16 @@ Parameters:
     Default: dev
   DomainName:
     Type: String
-    Description: "Custom domain name (e.g. shogi-dev.h-akira.net, shogi.h-akira.net)"
+    Description: "Custom domain name (e.g. shogi-dev.example.com, shogi.example.com)"
   AcmCertificateArn:
     Type: String
     Description: "ACM certificate ARN (us-east-1) for CloudFront"
   HostedZoneName:
     Type: String
-    Description: "Route 53 hosted zone name (e.g. shogi-dev.h-akira.net, shogi.h-akira.net)"
+    Description: "Route 53 hosted zone name (e.g. shogi-dev.example.com, shogi.example.com)"
   CognitoAuthDomain:
     Type: String
-    Description: "Cognito custom domain (e.g. auth.shogi-dev.h-akira.net)"
+    Description: "Cognito custom domain (e.g. auth.shogi-dev.example.com)"
   CognitoCertificateArn:
     Type: String
     Description: "ACM certificate ARN (us-east-1) for Cognito custom domain"

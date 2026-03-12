@@ -36,6 +36,10 @@ Parameters:
   CognitoCertificateArn:
     Type: String
     Description: "ACM certificate ARN (us-east-1) for Cognito custom domain"
+  AllowedIps:
+    Type: String
+    Default: ""
+    Description: "Comma-separated IP addresses for CloudFront access restriction (e.g. '1.2.3.4,5.6.7.8'). Empty = no restriction"
 
 Resources:
   CodeConnectionsPolicy:
@@ -266,6 +270,8 @@ Resources:
             Value: !Ref CognitoAuthDomain
           - Name: COGNITO_CERTIFICATE_ARN
             Value: !Ref CognitoCertificateArn
+          - Name: ALLOWED_IPS
+            Value: !Ref AllowedIps
       Source:
         Type: GITHUB
         Location: !Sub "https://github.com/${GitHubOwner}/${GitHubRepo}.git"

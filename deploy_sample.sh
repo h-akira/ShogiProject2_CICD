@@ -3,6 +3,7 @@ set -e
 
 ENV=dev
 REGION=ap-northeast-1
+GITHUB_BRANCH=main
 CODESTAR_CONNECTION_ARN=arn:aws:codeconnections:ap-northeast-1:XXXXXXXXXXXX:connection/xxx
 DOMAIN_NAME=shogi-dev.example.com
 ACM_CERTIFICATE_ARN=arn:aws:acm:us-east-1:XXXXXXXXXXXX:certificate/xxx
@@ -16,6 +17,7 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_NAMED_IAM \
   --region ${REGION} \
   --parameter-overrides Env=${ENV} CodeStarConnectionArn=${CODESTAR_CONNECTION_ARN} \
+    GitHubBranch=${GITHUB_BRANCH} \
     DomainName=${DOMAIN_NAME} AcmCertificateArn=${ACM_CERTIFICATE_ARN} \
     HostedZoneName=${HOSTED_ZONE_NAME} CognitoAuthDomain=${COGNITO_AUTH_DOMAIN} \
     CognitoCertificateArn=${COGNITO_CERTIFICATE_ARN}
@@ -25,18 +27,21 @@ aws cloudformation deploy \
   --template-file backend_main.yaml \
   --capabilities CAPABILITY_NAMED_IAM \
   --region ${REGION} \
-  --parameter-overrides Env=${ENV} CodeStarConnectionArn=${CODESTAR_CONNECTION_ARN}
+  --parameter-overrides Env=${ENV} CodeStarConnectionArn=${CODESTAR_CONNECTION_ARN} \
+    GitHubBranch=${GITHUB_BRANCH}
 
 aws cloudformation deploy \
   --stack-name "stack-sgp-${ENV}-cicd-backend-analysis" \
   --template-file backend_analysis.yaml \
   --capabilities CAPABILITY_NAMED_IAM \
   --region ${REGION} \
-  --parameter-overrides Env=${ENV} CodeStarConnectionArn=${CODESTAR_CONNECTION_ARN}
+  --parameter-overrides Env=${ENV} CodeStarConnectionArn=${CODESTAR_CONNECTION_ARN} \
+    GitHubBranch=${GITHUB_BRANCH}
 
 aws cloudformation deploy \
   --stack-name "stack-sgp-${ENV}-cicd-frontend" \
   --template-file frontend.yaml \
   --capabilities CAPABILITY_NAMED_IAM \
   --region ${REGION} \
-  --parameter-overrides Env=${ENV} CodeStarConnectionArn=${CODESTAR_CONNECTION_ARN}
+  --parameter-overrides Env=${ENV} CodeStarConnectionArn=${CODESTAR_CONNECTION_ARN} \
+    GitHubBranch=${GITHUB_BRANCH}

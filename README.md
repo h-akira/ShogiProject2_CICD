@@ -11,9 +11,13 @@
 | `backend_main.yaml` | メイン API（SAM build & deploy）用 CodeBuild プロジェクト |
 | `backend_analysis.yaml` | 解析 API（SAM + Docker build & deploy）用 CodeBuild プロジェクト |
 | `frontend.yaml` | フロントエンド（Vite build & S3 deploy）用 CodeBuild プロジェクト |
-| `deploy_sample.sh` | デプロイスクリプトのサンプル（ARN 等はダミー値） |
+| `pipeline.yaml` | CodePipeline（手動承認 → CodeBuild 実行）テンプレート |
+| `deploy_sample.sh` | デプロイスクリプトのサンプル（Webhook 直接実行、dev 向け） |
+| `deploy_sample_with_pipeline.sh` | デプロイスクリプトのサンプル（Pipeline 承認フロー付き、pro 向け） |
 
 ## アーキテクチャ
+
+### Webhook 直接実行（dev 環境）
 
 ```mermaid
 flowchart TB
@@ -25,11 +29,37 @@ flowchart TB
         frontend["frontend.yaml<br/>CodeBuild (Vite+S3)"]
     end
 
+    gh_push["GitHub push"] --> infra
+    gh_push --> backend_main
+    gh_push --> backend_analysis
+    gh_push --> frontend
+
     notice -.->|Export<br/>TopicArn| infra
     notice -.->|Export<br/>TopicArn| backend_main
     notice -.->|Export<br/>TopicArn| backend_analysis
     notice -.->|Export<br/>TopicArn| frontend
 ```
+
+### Pipeline 承認フロー（pro 環境）
+
+```mermaid
+flowchart LR
+    subgraph "Pipeline (per component)"
+        source["Source<br/>(GitHub)"]
+        approval["Manual<br/>Approval"]
+        build["Build<br/>(CodeBuild)"]
+        source --> approval --> build
+    end
+
+    gh_push["GitHub push"] --> source
+    sns["SNS Topic"] -.->|承認通知| approval
+```
+
+各コンポーネント（infra, backend-main, backend-analysis, frontend）に独立した Pipeline が1本ずつ作成される（計4本）。
+
+CodeBuild テンプレートは `SourceType` パラメータで動作を切り替える:
+- `GITHUB`（デフォルト）: Webhook による直接実行
+- `CODEPIPELINE`: Pipeline 経由での実行（`EnableWebhook=false` と併用）
 
 ## 前提条件
 
@@ -51,22 +81,36 @@ CodeBuild が GitHub リポジトリを参照するために、事前に AWS コ
 
 ## デプロイ手順
 
+### dev 環境（Webhook 直接実行）
+
 `deploy_sample.sh` をコピーして環境に合わせた変数を設定し、実行する。
 
 ```bash
-cp deploy_sample.sh deploy_myenv.sh
-# deploy_myenv.sh の変数を編集
+cp deploy_sample.sh deploy_dev.sh
+# deploy_dev.sh の変数を編集
 cd CICD
-./deploy_myenv.sh
+./deploy_dev.sh
 ```
 
-デプロイスクリプトは以下の順序でスタックをデプロイする:
+### pro 環境（Pipeline 承認フロー付き）
 
-1. `notice.yaml` — SNS トピック（通知が不要な場合もデプロイしておく）
-2. `infra.yaml` — インフラ CodeBuild
-3. `backend_main.yaml` — バックエンド（メイン）CodeBuild
-4. `backend_analysis.yaml` — バックエンド（解析）CodeBuild
-5. `frontend.yaml` — フロントエンド CodeBuild
+`deploy_sample_with_pipeline.sh` をコピーして環境に合わせた変数を設定し、実行する。
+
+```bash
+cp deploy_sample_with_pipeline.sh deploy_prod.sh
+# deploy_prod.sh の変数を編集
+cd CICD
+./deploy_prod.sh
+```
+
+デプロイ順序:
+
+1. `notice.yaml` — SNS トピック
+2. `infra.yaml` — インフラ CodeBuild（`SourceType=CODEPIPELINE`, `EnableWebhook=false`）
+3. `backend_main.yaml` — バックエンド（メイン）CodeBuild（同上）
+4. `backend_analysis.yaml` — バックエンド（解析）CodeBuild（同上）
+5. `frontend.yaml` — フロントエンド CodeBuild（同上）
+6. `pipeline.yaml` × 4 — 各コンポーネントの CodePipeline（CodeBuild のエクスポートを参照するため、必ず CodeBuild スタックの後にデプロイ）
 
 ## テンプレート詳細
 
@@ -90,13 +134,14 @@ cd CICD
 | `Env` | `dev` | 環境識別子 |
 | `GitHubBranch` | `main` | ビルド対象ブランチ |
 | `CodeStarConnectionArn` | — | GitHub 接続 ARN |
+| `SourceType` | `GITHUB` | ソースタイプ（`GITHUB`: Webhook 直接実行, `CODEPIPELINE`: Pipeline 経由） |
 | `EnableWebhook` | `true` | GitHub Webhook による自動ビルドの有効/無効 |
 | `EnableNotification` | `false` | SNS ビルド通知の有効/無効 |
 | `NotificationEnv` | `common` | 通知先 SNS トピックの Env 識別子 |
 
 `EnableNotification=true` にすると、CodeBuild のビルド状態変化（成功・失敗・開始・停止）が SNS 経由で通知される。通知先は `notice.yaml` でエクスポートされた SNS トピック（`sgp-${NotificationEnv}-cicd-notice-TopicArn`）を `Fn::ImportValue` で参照する。
 
-`EnableWebhook=false` にすると、GitHub への push による自動ビルドが無効になる。CodePipeline 連携時に使用する。
+`SourceType=CODEPIPELINE` + `EnableWebhook=false` の組み合わせで、Pipeline 経由のビルドに切り替わる。この場合、CodeBuild の Source は Pipeline が渡す S3 アーティファクトから取得される。
 
 ### infra.yaml 固有パラメーター
 
@@ -109,9 +154,41 @@ cd CICD
 | `CognitoCertificateArn` | — | Cognito 用 ACM 証明書 ARN |
 | `AllowedIps` | 空 | CloudFront IP 制限（カンマ区切り） |
 
+### pipeline.yaml
+
+コンポーネントごとに独立した CodePipeline を作成するパラメータ化されたテンプレート。
+
+| パラメーター | デフォルト | 説明 |
+|------------|----------|------|
+| `Env` | — | 環境識別子 |
+| `Component` | — | コンポーネント名（`infra`, `backend-main`, `backend-analysis`, `frontend`） |
+| `GitHubOwner` | `h-akira` | GitHub リポジトリオーナー |
+| `GitHubRepo` | — | GitHub リポジトリ名 |
+| `GitHubBranch` | `main` | 監視対象ブランチ |
+| `CodeStarConnectionArn` | — | GitHub 接続 ARN |
+| `CodeBuildStackName` | — | CodeBuild スタック名（`Fn::ImportValue` で参照） |
+| `OutputArtifactFormat` | `CODE_ZIP` | ソース出力形式。`CODEBUILD_CLONE_REF` にすると full git clone になり、サブモジュールが利用可能 |
+| `EnableNotification` | `true` | 承認通知の有効/無効 |
+| `NotificationEnv` | `common` | 通知先 SNS トピックの Env 識別子 |
+
+Pipeline は3ステージで構成される:
+
+1. **Source** — CodeStar Connection 経由で GitHub からソースを取得
+2. **Approval** — SNS 通知付きの手動承認ゲート（7日間の有効期限）
+3. **Build** — 既存の CodeBuild プロジェクトを実行
+
+エクスポート:
+- `${StackName}-PipelineName` — Pipeline 名
+- `${StackName}-PipelineArn` — Pipeline ARN
+- `${StackName}-ArtifactBucketName` — アーティファクト S3 バケット名
+
 ## 各 CodeBuild プロジェクトの動作
 
-各プロジェクトは対応するリポジトリの指定ブランチへの push をトリガーに自動実行される（Webhook が有効な場合）。buildspec の内容は各リポジトリの `buildspec.yml` を参照。
+各プロジェクトは対応するリポジトリの指定ブランチへの push をトリガーに実行される。
+- **dev 環境**: Webhook により直接 CodeBuild が起動
+- **pro 環境**: Pipeline がトリガーされ、手動承認後に CodeBuild が起動
+
+buildspec の内容は各リポジトリの `buildspec.yml` を参照。
 
 ### infra
 
@@ -123,6 +200,8 @@ Infra リポジトリで CDK をデプロイする。デプロイ順序の注意
 ### backend-main / backend-analysis
 
 SAM で Lambda + API Gateway をデプロイする。アーティファクト用 S3 バケットは `--resolve-s3` で自動管理される。`backend-analysis` は Docker イメージのビルドを含む。
+
+`backend-analysis` はサブモジュールを使用しているため、Pipeline 経由の場合は `OutputArtifactFormat=CODEBUILD_CLONE_REF` を指定する。これにより CodeBuild が full git clone を行い、buildspec の `git submodule update --init` でサブモジュールを取得できる（`env.git-credential-helper: yes` で CodeStar Connection の認証情報を git に引き継ぐ）。
 
 ### frontend
 

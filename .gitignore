@@ -1,2 +1,4 @@
 deploy_*.sh
 !deploy_sample.sh
+!deploy_sample_with_pipeline.sh
+tmp/

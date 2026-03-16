@@ -1,0 +1,198 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CodePipeline with manual approval gate for production deployments
+
+Parameters:
+  Env:
+    Type: String
+    Description: Environment identifier (e.g. pro)
+  Component:
+    Type: String
+    Description: "Component name (e.g. frontend, backend-main, backend-analysis, infra)"
+  GitHubOwner:
+    Type: String
+    Default: h-akira
+    Description: GitHub repository owner
+  GitHubRepo:
+    Type: String
+    Description: GitHub repository name
+  GitHubBranch:
+    Type: String
+    Default: main
+    Description: GitHub branch to monitor
+  CodeStarConnectionArn:
+    Type: String
+    Description: "CodeStar Connection ARN for GitHub (e.g. arn:aws:codeconnections:ap-northeast-1:XXXXXXXXXXXX:connection/xxx)"
+  CodeBuildStackName:
+    Type: String
+    Description: "Stack name of the CodeBuild project to reference via Fn::ImportValue (e.g. stack-sgp-pro-cicd-frontend)"
+  OutputArtifactFormat:
+    Type: String
+    Description: "Source output format: CODE_ZIP (default) or CODEBUILD_CLONE_REF (for repos that need git submodules)"
+    Default: CODE_ZIP
+    AllowedValues:
+      - CODE_ZIP
+      - CODEBUILD_CLONE_REF
+  EnableNotification:
+    Type: String
+    Description: Enable SNS notification for approval
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+  NotificationEnv:
+    Type: String
+    Description: Env identifier for the SNS notification topic stack
+    Default: common
+
+Conditions:
+  IsNotificationEnabled: !Equals [!Ref EnableNotification, "true"]
+
+Resources:
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "s3-sgp-${Env}-cicd-pipeline-${Component}"
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireArtifacts
+            Status: Enabled
+            ExpirationInDays: 30
+      Tags:
+        - Key: Project
+          Value: ShogiProject
+        - Key: Env
+          Value: !Ref Env
+
+  PipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "role-sgp-${Env}-cicd-pipeline-${Component}"
+      Path: /service-role/
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+
+  PipelinePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "policy-sgp-${Env}-cicd-pipeline-${Component}"
+      Roles:
+        - !Ref PipelineRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: CodeStarConnection
+            Effect: Allow
+            Action:
+              - codestar-connections:UseConnection
+              - codeconnections:UseConnection
+            Resource: !Ref CodeStarConnectionArn
+          - Sid: S3Artifacts
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:GetBucketVersioning
+              - s3:ListBucket
+            Resource:
+              - !GetAtt ArtifactBucket.Arn
+              - !Sub "${ArtifactBucket.Arn}/*"
+          - Sid: CodeBuild
+            Effect: Allow
+            Action:
+              - codebuild:StartBuild
+              - codebuild:BatchGetBuilds
+            Resource:
+              - Fn::ImportValue: !Sub "${CodeBuildStackName}-ProjectArn"
+          - !If
+            - IsNotificationEnabled
+            - Sid: SNSApproval
+              Effect: Allow
+              Action:
+                - sns:Publish
+              Resource:
+                Fn::ImportValue: !Sub "sgp-${NotificationEnv}-cicd-notice-TopicArn"
+            - !Ref "AWS::NoValue"
+
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub "pipeline-sgp-${Env}-${Component}"
+      RoleArn: !GetAtt PipelineRole.Arn
+      PipelineType: V2
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+      Stages:
+        # Stage 1: Source - fetch code from GitHub via CodeStar Connection
+        - Name: Source
+          Actions:
+            - Name: GitHubSource
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: "1"
+              Configuration:
+                ConnectionArn: !Ref CodeStarConnectionArn
+                FullRepositoryId: !Sub "${GitHubOwner}/${GitHubRepo}"
+                BranchName: !Ref GitHubBranch
+                OutputArtifactFormat: !Ref OutputArtifactFormat
+                DetectChanges: "true"
+              OutputArtifacts:
+                - Name: SourceArtifact
+              RunOrder: 1
+        # Stage 2: Approval - manual approval gate before build
+        - Name: Approval
+          Actions:
+            - Name: ManualApproval
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Provider: Manual
+                Version: "1"
+              Configuration:
+                NotificationArn: !If
+                  - IsNotificationEnabled
+                  - Fn::ImportValue: !Sub "sgp-${NotificationEnv}-cicd-notice-TopicArn"
+                  - !Ref "AWS::NoValue"
+                CustomData: !Sub "Approve deployment of ${Component} to ${Env} environment"
+              RunOrder: 1
+        # Stage 3: Build - run CodeBuild project
+        - Name: Build
+          Actions:
+            - Name: CodeBuild
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName:
+                  Fn::ImportValue: !Sub "${CodeBuildStackName}-ProjectName"
+              InputArtifacts:
+                - Name: SourceArtifact
+              RunOrder: 1
+      Tags:
+        - Key: Project
+          Value: ShogiProject
+        - Key: Env
+          Value: !Ref Env
+
+Outputs:
+  PipelineName:
+    Value: !Ref Pipeline
+    Export:
+      Name: !Sub "${AWS::StackName}-PipelineName"
+  PipelineArn:
+    Value: !Sub "arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}"
+    Export:
+      Name: !Sub "${AWS::StackName}-PipelineArn"
+  ArtifactBucketName:
+    Value: !Ref ArtifactBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-ArtifactBucketName"

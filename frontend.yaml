@@ -21,6 +21,13 @@ Parameters:
     Type: String
     Description: Environment identifier (dev, pro)
     Default: dev
+  SourceType:
+    Type: String
+    Description: "Source type: GITHUB for direct webhook trigger, CODEPIPELINE for Pipeline-driven builds"
+    Default: GITHUB
+    AllowedValues:
+      - GITHUB
+      - CODEPIPELINE
   EnableWebhook:
     Type: String
     Description: Enable GitHub webhook to trigger builds automatically
@@ -43,6 +50,8 @@ Parameters:
 Conditions:
   IsWebhookEnabled: !Equals [!Ref EnableWebhook, "true"]
   IsNotificationEnabled: !Equals [!Ref EnableNotification, "true"]
+  IsCodePipeline: !Equals [!Ref SourceType, "CODEPIPELINE"]
+  IsGitHub: !Equals [!Ref SourceType, "GITHUB"]
 
 Resources:
   CodeConnectionsPolicy:
@@ -135,6 +144,19 @@ Resources:
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
+          # S3: Pipeline artifact bucket access (required when SourceType=CODEPIPELINE)
+          - !If
+            - IsCodePipeline
+            - Sid: PipelineArtifacts
+              Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:GetBucketLocation
+                - s3:ListBucket
+              Resource:
+                - !Sub "arn:aws:s3:::s3-sgp-${Env}-cicd-pipeline-*"
+                - !Sub "arn:aws:s3:::s3-sgp-${Env}-cicd-pipeline-*/*"
+            - !Ref "AWS::NoValue"
           # units_contracts.md: インフラ → CI/CD エクスポート5件を buildspec で取得
           # sgp-${Env}-infra-S3BucketName, CloudFrontDistributionId, CloudFrontDomainName,
           # CognitoClientId, CognitoDomain
@@ -169,7 +191,7 @@ Resources:
       Description: Build and deploy Frontend (shogi-board + shogi-main)
       ServiceRole: !GetAtt CodeBuildRole.Arn
       Artifacts:
-        Type: NO_ARTIFACTS
+        Type: !If [IsCodePipeline, CODEPIPELINE, NO_ARTIFACTS]
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
@@ -180,10 +202,16 @@ Resources:
           - Name: PROJECT
             Value: sgp
       Source:
-        Type: GITHUB
-        Location: !Sub "https://github.com/${GitHubOwner}/${GitHubRepo}.git"
+        Type: !If [IsCodePipeline, CODEPIPELINE, GITHUB]
+        Location: !If
+          - IsGitHub
+          - !Sub "https://github.com/${GitHubOwner}/${GitHubRepo}.git"
+          - !Ref "AWS::NoValue"
         BuildSpec: buildspec.yml
-      SourceVersion: !Sub "refs/heads/${GitHubBranch}"
+      SourceVersion: !If
+        - IsGitHub
+        - !Sub "refs/heads/${GitHubBranch}"
+        - !Ref "AWS::NoValue"
       Triggers:
         Webhook: !If [IsWebhookEnabled, true, false]
         FilterGroups:

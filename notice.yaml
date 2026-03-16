@@ -1,0 +1,41 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: SNS Topic for CICD build notifications
+
+Parameters:
+  Env:
+    Type: String
+    Description: Environment identifier (dev, pro, common, etc.)
+    Default: common
+
+Resources:
+  BuildNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "sns-sgp-${Env}-cicd-notice"
+      Tags:
+        - Key: Project
+          Value: ShogiProject
+        - Key: Env
+          Value: !Ref Env
+
+  # Allow CodeStar Notifications to publish to this topic
+  BuildNotificationTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref BuildNotificationTopic
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCodeStarNotifications
+            Effect: Allow
+            Principal:
+              Service: codestar-notifications.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref BuildNotificationTopic
+
+Outputs:
+  TopicArn:
+    Value: !Ref BuildNotificationTopic
+    Export:
+      Name: !Sub "sgp-${Env}-cicd-notice-TopicArn"

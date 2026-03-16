@@ -11,6 +11,14 @@ HOSTED_ZONE_NAME=shogi-dev.example.com
 COGNITO_AUTH_DOMAIN=auth.shogi-dev.example.com
 COGNITO_CERTIFICATE_ARN=${ACM_CERTIFICATE_ARN}
 
+NOTICE_ENV=common
+
+aws cloudformation deploy \
+  --stack-name "stack-sgp-${NOTICE_ENV}-cicd-notice" \
+  --template-file notice.yaml \
+  --region ${REGION} \
+  --parameter-overrides Env=${NOTICE_ENV}
+
 aws cloudformation deploy \
   --stack-name "stack-sgp-${ENV}-cicd-infra" \
   --template-file infra.yaml \
@@ -20,7 +28,10 @@ aws cloudformation deploy \
     GitHubBranch=${GITHUB_BRANCH} \
     DomainName=${DOMAIN_NAME} AcmCertificateArn=${ACM_CERTIFICATE_ARN} \
     HostedZoneName=${HOSTED_ZONE_NAME} CognitoAuthDomain=${COGNITO_AUTH_DOMAIN} \
-    CognitoCertificateArn=${COGNITO_CERTIFICATE_ARN}
+    CognitoCertificateArn=${COGNITO_CERTIFICATE_ARN} \
+    EnableWebhook=true \
+    EnableNotification=true \
+    NotificationEnv=${NOTICE_ENV}
 
 aws cloudformation deploy \
   --stack-name "stack-sgp-${ENV}-cicd-backend-main" \
@@ -28,7 +39,10 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_NAMED_IAM \
   --region ${REGION} \
   --parameter-overrides Env=${ENV} CodeStarConnectionArn=${CODESTAR_CONNECTION_ARN} \
-    GitHubBranch=${GITHUB_BRANCH}
+    GitHubBranch=${GITHUB_BRANCH} \
+    EnableWebhook=true \
+    EnableNotification=true \
+    NotificationEnv=${NOTICE_ENV}
 
 aws cloudformation deploy \
   --stack-name "stack-sgp-${ENV}-cicd-backend-analysis" \
@@ -36,7 +50,10 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_NAMED_IAM \
   --region ${REGION} \
   --parameter-overrides Env=${ENV} CodeStarConnectionArn=${CODESTAR_CONNECTION_ARN} \
-    GitHubBranch=${GITHUB_BRANCH}
+    GitHubBranch=${GITHUB_BRANCH} \
+    EnableWebhook=true \
+    EnableNotification=true \
+    NotificationEnv=${NOTICE_ENV}
 
 aws cloudformation deploy \
   --stack-name "stack-sgp-${ENV}-cicd-frontend" \
@@ -44,4 +61,7 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_NAMED_IAM \
   --region ${REGION} \
   --parameter-overrides Env=${ENV} CodeStarConnectionArn=${CODESTAR_CONNECTION_ARN} \
-    GitHubBranch=${GITHUB_BRANCH}
+    GitHubBranch=${GITHUB_BRANCH} \
+    EnableWebhook=true \
+    EnableNotification=true \
+    NotificationEnv=${NOTICE_ENV}

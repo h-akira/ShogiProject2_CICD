@@ -21,6 +21,28 @@ Parameters:
     Type: String
     Description: Environment identifier (dev, pro)
     Default: dev
+  EnableWebhook:
+    Type: String
+    Description: Enable GitHub webhook to trigger builds automatically
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+  EnableNotification:
+    Type: String
+    Description: Enable SNS build notifications
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+  NotificationEnv:
+    Type: String
+    Description: Env identifier for the SNS notification topic stack, separated from Env to allow sharing a common topic across environments
+    Default: common
+
+Conditions:
+  IsWebhookEnabled: !Equals [!Ref EnableWebhook, "true"]
+  IsNotificationEnabled: !Equals [!Ref EnableNotification, "true"]
 
 Resources:
   CodeConnectionsPolicy:
@@ -273,18 +295,43 @@ Resources:
           FetchSubmodules: true
       SourceVersion: !Sub "refs/heads/${GitHubBranch}"
       Triggers:
-        Webhook: true
+        Webhook: !If [IsWebhookEnabled, true, false]
         FilterGroups:
-          - - Type: EVENT
-              Pattern: PUSH
-            - Type: HEAD_REF
-              Pattern: !Sub "^refs/heads/${GitHubBranch}$"
+          !If
+            - IsWebhookEnabled
+            - - - Type: EVENT
+                  Pattern: PUSH
+                - Type: HEAD_REF
+                  Pattern: !Sub "^refs/heads/${GitHubBranch}$"
+            - !Ref "AWS::NoValue"
       Tags:
         - Key: Project
           Value: ShogiProject
         - Key: Env
           Value: !Ref Env
       TimeoutInMinutes: 30
+
+  BuildNotificationRule:
+    Type: AWS::CodeStarNotifications::NotificationRule
+    Condition: IsNotificationEnabled
+    Properties:
+      Name: !Sub "sgp-${Env}-cicd-backend-analysis-notification"
+      DetailType: FULL
+      Resource: !GetAtt CodeBuildProject.Arn
+      EventTypeIds:
+        - codebuild-project-build-state-succeeded
+        - codebuild-project-build-state-failed
+        - codebuild-project-build-state-in-progress
+        - codebuild-project-build-state-stopped
+      Targets:
+        - TargetType: SNS
+          TargetAddress: !If
+            - IsNotificationEnabled
+            - Fn::ImportValue: !Sub "sgp-${NotificationEnv}-cicd-notice-TopicArn"
+            - !Ref "AWS::NoValue"
+      Tags:
+        Project: ShogiProject
+        Env: !Ref Env
 
 Outputs:
   CodeBuildProjectName:

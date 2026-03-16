@@ -6,11 +6,30 @@
 
 | ファイル | 内容 |
 |---------|------|
+| `notice.yaml` | ビルド通知用 SNS トピック |
 | `infra.yaml` | インフラ（CDK deploy）用 CodeBuild プロジェクト |
 | `backend_main.yaml` | メイン API（SAM build & deploy）用 CodeBuild プロジェクト |
 | `backend_analysis.yaml` | 解析 API（SAM + Docker build & deploy）用 CodeBuild プロジェクト |
 | `frontend.yaml` | フロントエンド（Vite build & S3 deploy）用 CodeBuild プロジェクト |
-| `deploy.sh` | 上記テンプレートを CloudFormation にデプロイするスクリプト |
+| `deploy_sample.sh` | デプロイスクリプトのサンプル（ARN 等はダミー値） |
+
+## アーキテクチャ
+
+```mermaid
+flowchart TB
+    subgraph "CICD スタック"
+        notice["notice.yaml<br/>SNS Topic"]
+        infra["infra.yaml<br/>CodeBuild (CDK)"]
+        backend_main["backend_main.yaml<br/>CodeBuild (SAM)"]
+        backend_analysis["backend_analysis.yaml<br/>CodeBuild (SAM+Docker)"]
+        frontend["frontend.yaml<br/>CodeBuild (Vite+S3)"]
+    end
+
+    notice -.->|Export<br/>TopicArn| infra
+    notice -.->|Export<br/>TopicArn| backend_main
+    notice -.->|Export<br/>TopicArn| backend_analysis
+    notice -.->|Export<br/>TopicArn| frontend
+```
 
 ## 前提条件
 
@@ -32,23 +51,67 @@ CodeBuild が GitHub リポジトリを参照するために、事前に AWS コ
 
 ## デプロイ手順
 
-`deploy.sh` の先頭にある変数を編集してから実行する。
+`deploy_sample.sh` をコピーして環境に合わせた変数を設定し、実行する。
 
 ```bash
-# deploy.sh の先頭を編集
-ENV=dev
-REGION=ap-northeast-1
-CODESTAR_CONNECTION_ARN=arn:aws:codeconnections:ap-northeast-1:XXXXXXXXXXXX:connection/xxx
-```
-
-```bash
+cp deploy_sample.sh deploy_myenv.sh
+# deploy_myenv.sh の変数を編集
 cd CICD
-./deploy.sh
+./deploy_myenv.sh
 ```
+
+デプロイスクリプトは以下の順序でスタックをデプロイする:
+
+1. `notice.yaml` — SNS トピック（通知が不要な場合もデプロイしておく）
+2. `infra.yaml` — インフラ CodeBuild
+3. `backend_main.yaml` — バックエンド（メイン）CodeBuild
+4. `backend_analysis.yaml` — バックエンド（解析）CodeBuild
+5. `frontend.yaml` — フロントエンド CodeBuild
+
+## テンプレート詳細
+
+### notice.yaml
+
+ビルド通知用の SNS トピックを作成する。サブスクリプション（メールアドレス等）は手動で追加する。
+
+| パラメーター | デフォルト | 説明 |
+|------------|----------|------|
+| `Env` | `common` | 環境識別子。`common` にすると dev/pro で共有可能 |
+
+エクスポート:
+- `sgp-${Env}-cicd-notice-TopicArn` — SNS トピック ARN
+
+### 全 CodeBuild テンプレート共通パラメーター
+
+以下のパラメーターは `infra.yaml`、`backend_main.yaml`、`backend_analysis.yaml`、`frontend.yaml` の全てに共通。
+
+| パラメーター | デフォルト | 説明 |
+|------------|----------|------|
+| `Env` | `dev` | 環境識別子 |
+| `GitHubBranch` | `main` | ビルド対象ブランチ |
+| `CodeStarConnectionArn` | — | GitHub 接続 ARN |
+| `EnableWebhook` | `true` | GitHub Webhook による自動ビルドの有効/無効 |
+| `EnableNotification` | `false` | SNS ビルド通知の有効/無効 |
+| `NotificationEnv` | `common` | 通知先 SNS トピックの Env 識別子 |
+
+`EnableNotification=true` にすると、CodeBuild のビルド状態変化（成功・失敗・開始・停止）が SNS 経由で通知される。通知先は `notice.yaml` でエクスポートされた SNS トピック（`sgp-${NotificationEnv}-cicd-notice-TopicArn`）を `Fn::ImportValue` で参照する。
+
+`EnableWebhook=false` にすると、GitHub への push による自動ビルドが無効になる。CodePipeline 連携時に使用する。
+
+### infra.yaml 固有パラメーター
+
+| パラメーター | デフォルト | 説明 |
+|------------|----------|------|
+| `DomainName` | — | カスタムドメイン名 |
+| `AcmCertificateArn` | — | ACM 証明書 ARN (us-east-1) |
+| `HostedZoneName` | — | Route 53 ホストゾーン名 |
+| `CognitoAuthDomain` | — | Cognito カスタムドメイン |
+| `CognitoCertificateArn` | — | Cognito 用 ACM 証明書 ARN |
+| `AllowedIps` | 空 | CloudFront IP 制限（カンマ区切り） |
 
 ## 各 CodeBuild プロジェクトの動作
 
-各プロジェクトは対応するリポジトリの `main` ブランチへの push をトリガーに自動実行される。buildspec の内容は各リポジトリの `buildspec.yml` を参照。
+各プロジェクトは対応するリポジトリの指定ブランチへの push をトリガーに自動実行される（Webhook が有効な場合）。buildspec の内容は各リポジトリの `buildspec.yml` を参照。
 
 ### infra
 
@@ -73,3 +136,21 @@ SAM で Lambda + API Gateway をデプロイする。アーティファクト用
 | `VITE_API_BASE_URL` | 固定値 `/api/v1` |
 
 ビルド後、`s3-sgp-{env}-infra-frontend` バケットに同期し、CloudFront キャッシュを無効化する。
+
+## 既知の問題
+
+### NotificationRule の初回デプロイ失敗
+
+`EnableNotification=true` で初めて `NotificationRule` を作成する際、AWS アカウントに **サービスリンクドロール** (`AWSServiceRoleForCodeStarNotifications`) が存在しない場合、デプロイが失敗することがある。
+
+```
+Resource handler returned message: "Invalid request provided:
+AWS::CodeStarNotifications::NotificationRule"
+(HandlerErrorCode: InvalidRequest)
+```
+
+**原因**: CodeStar Notifications サービスが EventBridge マネージドルールを作成するために必要なサービスリンクドロールが、初回リクエスト時に自動作成される。このロール作成には最大15分かかるが、NotificationRule の作成はロールの準備完了を待たずに進行するため、タイミングによって失敗する。
+
+**対処**: 10〜15分待ってから再デプロイすれば成功する。一度ロールが作成されれば、以降は発生しない。
+
+詳細は [tmp/notification-rule-error-investigation.md](tmp/notification-rule-error-investigation.md) を参照。
